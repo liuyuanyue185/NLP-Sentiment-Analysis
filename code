@@ -1,0 +1,434 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchtext import data
+from torchtext import datasets
+import time
+import random
+import spacy
+import en_core_web_sm 
+from torch.nn import init
+import torch.autograd as autograd 
+from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.pyplot as plt
+import numpy
+from pandas import DataFrame
+import pandas as pd
+from pandas import ExcelWriter 
+
+
+
+class RNN(nn.Module):
+    def __init__(self, input_dim, embedding_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.embedding = nn.Embedding(input_dim,embedding_dim)
+        self.rnn = nn.RNN(embedding_dim,hidden_dim)
+        self.fc = nn.Linear(hidden_dim,output_dim)
+    def forward(self,text):
+        
+        embedded = self.embedding(text)
+        output,hidden = self.rnn(embedded)
+        y_predict = self.fc(output[-1])
+        
+        '''
+        print('RNN text.shape',text.shape)
+        print('RNN embedded.shape:', embedded.shape)
+        print('RNN output.shape:', output.shape)
+        print('RNN y_predict.shape:', y_predict.shape)
+        ''' 
+        return y_predict,hidden
+
+    def init_hidden(self):
+        return autograd.Variable(torch.zeros(1,1,self.hidden_dim))
+
+class LSTM(nn.Module):
+    def __init__(self,input_dim, embedding_dim, hidden_dim,output_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.embedding = nn.Embedding(input_dim,embedding_dim)
+        self.lstm = nn.LSTM(embedding_dim,hidden_dim)
+        self.fc = nn.Linear(hidden_dim,output_dim)
+
+    def forward(self,text):
+        
+        embedded = self.embedding(text)
+        output,hidden = self.lstm(embedded)
+        y_predict = self.fc(output[-1])
+        '''
+        print('LSTM text.shape',text.shape)
+        print('lstm embedded.shape:', embedded.shape)
+        print('lstm output.shape:', output.shape)
+        print('lstm y_predict.shape:', y_predict.shape)
+        '''
+        return y_predict,hidden
+
+    def init_hidden(self):
+        return (autograd.Variable(torch.zeros(1,1,self.hidden_dim)),autograd.Variable(torch.zeros(1,1,self.hidden_dim)))
+
+
+def accuracy(y_hat,y):
+    y_predict = (torch.sigmoid(y_hat)>0.5).long()
+    correct = (y_predict == y).float()
+    acc = correct.sum()/len(correct)
+    return acc
+
+def train(model,loader,optimizer,criterion):
+    epoch_loss = 0
+    epoch_acc = 0
+    model.train()
+    for batch in loader:
+        optimizer.zero_grad()
+
+        model.hidden = model.init_hidden()  #******
+
+        y_hat,_ = model(batch.text)
+        predict = y_hat.squeeze(1)
+        loss = criterion(predict,batch.label)
+        acc = accuracy(predict,batch.label)
+        loss.backward()
+        optimizer.step()
+        epoch_loss = epoch_loss + loss.item()
+        epoch_acc = epoch_acc + acc.item()
+    return round(epoch_loss/len(loader),3), round(epoch_acc/len(loader),3)
+
+def evaluate(model, loader, optimizer, criterion):
+    epoch_loss = 0
+    epoch_acc = 0
+    model.eval()
+    print(model.state_dict())
+    with torch.no_grad():
+        for batch in loader:
+
+            model.hidden = model.init_hidden()  #******
+
+            y_hat,_ = model(batch.text)
+            #print('evaluated ',len(loader))
+            predict = y_hat.squeeze(1)
+
+            loss = criterion(predict,batch.label)
+            acc = accuracy(predict,batch.label)
+            epoch_loss = epoch_loss + loss.item()
+            epoch_acc = epoch_acc + acc.item()
+    return round(epoch_loss/len(loader),3), round(epoch_acc/len(loader),3)
+
+def running(num_epochs,model,train_loader,valid_loader,test_loader,text,lr,model_name):
+
+    train_loss_list,train_acc_list,valid_loss_list,valid_acc_list = [],[],[],[]
+    optimizer = torch.optim.Adam(model.parameters(),lr)
+    criterion = nn.BCEWithLogitsLoss()
+    model = model.to(DEVICE)
+    criterion = criterion.to(DEVICE)
+    best_loss = float('inf')
+    epoch_best = 0.0
+
+    for epoch in range(num_epochs):
+        
+        train_loss,train_acc = train(model,train_loader,optimizer,criterion)
+        print('finish training')
+        train_loss_list.append(train_loss)
+        train_acc_list.append(train_acc)
+        valid_loss,valid_acc = evaluate(model,valid_loader,optimizer,criterion)
+        print('finish evaluation')
+        valid_loss_list.append(valid_loss)
+        valid_acc_list.append(valid_acc)
+        if valid_loss < best_loss:
+            best_loss = valid_loss
+            if model_name=='RNN':
+                torch.save(model.state_dict(),'RNN.pt')
+                state=torch.load('RNN.pt')
+                print( 'RNN model_dict epoch'+str(epoch),state)
+            else:
+                torch.save(model.state_dict(),'LSTM.pt')
+                state=torch.load('LSTM.pt')
+                print( 'LSTM model_dict epoch'+str(epoch),state)
+            epoch_best = epoch+1
+    if model_name=='RNN':
+        model.load_state_dict(torch.load('RNN.pt'))
+    else:
+        model.load_state_dict(torch.load('LSTM.pt'))
+    model = model.to(DEVICE)
+    test_loss,test_acc = evaluate(model, test_loader,optimizer,criterion)
+    print('finish testing')
+
+    return  train_loss_list,train_acc_list,valid_loss_list,valid_acc_list,test_loss,test_acc,epoch_best
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def verifying_model(model,sentence):
+    model.eval()
+    nlp = spacy.load('en_core_web_sm')
+    tokenized = [tok.text for tok in nlp.tokenizer(sentence)]
+    indexed = [text.vocab.stoi[t] for t in tokenized]
+    tensor = torch.LongTensor(indexed).to(DEVICE)
+    tensor = tensor.unsqueeze(1)
+    y,_ = model(tensor)
+    print('model.state_dict',model.state_dict())
+    result = torch.sigmoid(y)
+    return result.item()
+
+def multipage(filename,figs=None,dpi=200):
+    pp = PdfPages(filename)
+    if figs is None:
+        figs = [plt.figure(n) for n in plt.get_fignums()]
+    for fig in figs:
+        fig.savefig(pp, format='pdf')
+    pp.close()
+
+start0 = time.time()
+
+test='6-1'
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(DEVICE)
+torch.backends.cudnn.deterministic = True
+RANDOM_SEED = 123
+torch.manual_seed(RANDOM_SEED)
+
+text = data.Field(tokenize = 'spacy',tokenizer_language='en_core_web_sm')
+label = data.LabelField(dtype = torch.float)
+train_data,test_data = datasets.IMDB.splits(text,label)
+
+split_ratio_available = [0.7,0.8,0.9]
+#split_ratio_available=[0.7,0.8]
+data_list=[]
+test_record=['test']*15
+data_list.append(test_record)
+for ratio in split_ratio_available:
+    train_data,valid_data = train_data.split(random_state=random.seed(RANDOM_SEED),split_ratio=ratio)
+    text.build_vocab(train_data,max_size=5000,vectors='glove.6B.100d',unk_init=torch.Tensor.normal_)
+    # unk_init = init.xavier_uniform 
+    label.build_vocab(train_data)
+    train_loader,valid_loader,test_loader = data.BucketIterator.splits((train_data,valid_data,test_data), batch_size=128, device = DEVICE)
+
+    print('datasets were prepared well')
+
+    #num_epochs = 10
+    num_epochs = 5
+    input_dim = len(text.vocab)
+    
+    hidden_dim_available = [20, 50, 100, 200, 500]
+    #hidden_dim_available = [500]
+    embedding_dim = 100
+    output_dim = 1
+    run_RNN = True
+    run_LSTM = True
+    learning_rate=[0.001,0.003,0.005,0.008,0.01,0.02,0.03]
+    #learning_rate=[0.1]
+    test_list_lr_RNN = []
+    test_list_lr_LSTM = []
+    sentence = 'I love This film badly'
+    train_loss_list_RNN,train_acc_list_RNN,valid_loss_list_RNN,valid_acc_list_RNN,test_loss_RNN,test_acc_RNN,epoch_best_RNN=[],[],[],[],0,0,0
+    train_loss_list_LSTM,train_acc_list_LSTM,valid_loss_list_LSTM,valid_acc_list_LSTM,test_loss_LSTM,test_acc_LSTM,epoch_best_LSTM=[],[],[],[],0,0,0
+    
+
+    for hidden_dim in hidden_dim_available:
+        
+        for lr in learning_rate:
+            
+            print('\nstart to run this program'+' ratio:'+str(ratio)+' hidden_dim:'+str(hidden_dim)+' learning_rate:'+str(lr))
+            
+            try:
+                #if run_RNN:
+                print('start to run RNN')
+                start_RNN = time.time()
+                model = RNN(input_dim,embedding_dim,hidden_dim,output_dim)
+                
+                '''
+                print('text.vocab.vectors.shape',text.vocab.vectors.shape)
+                model.embedding.weight.data.copy_(text.vocab.vectors)
+                print('model.embedding.weight.data.copy.shape',model.embedding.weight.data.shape)
+                UNK_IDX = text.vocab.stoi[text.unk_token]
+                PAD_IDX = text.vocab.stoi[text.pad_token]
+                print('model.embedding.weight.data[UNK_IDX].shape',model.embedding.weight.data[UNK_IDX].shape) 
+                model.embedding.weight.data[UNK_IDX]=torch.zeros(embedding_dim)
+                print('model.embedding.weight.data[PAD_IDX].shape',model.embedding.weight.data[PAD_IDX].shape)
+                print('torch.zeros(embedding_dim).shape',torch.zeros(embedding_dim).shape)
+                model.embedding.weight.data[PAD_IDX]=torch.zeros(embedding_dim)
+                '''
+
+                train_loss_list_RNN,train_acc_list_RNN,valid_loss_list_RNN,valid_acc_list_RNN,test_loss_RNN,test_acc_RNN,epoch_best_RNN = running(num_epochs,model,train_loader,valid_loader,test_loader,text,lr,'RNN')
+                result1=verifying_model(model,sentence)
+                print('attitude from RNN is',result1)
+                test_list_lr_RNN.append(test_acc_RNN)
+                time_RNN = round((time.time()-start_RNN)/60,2)
+
+                data_list.append(['Vanilla RNN',ratio,hidden_dim,lr,time_RNN,result1, train_loss_list_RNN,train_acc_list_RNN,valid_loss_list_RNN,valid_acc_list_RNN,test_loss_RNN,test_acc_RNN,epoch_best_RNN,num_epochs,str(count_parameters(model))])
+
+                #if run_LSTM:
+                print('start to run LSTM')
+                start_LSTM = time.time()
+                model2 = LSTM(input_dim,embedding_dim,hidden_dim,output_dim)
+                print('built LSTM model')                                                              
+                
+                '''
+                print('text.vocab.vectors.shape',text.vocab.vectors.shape)
+                model2.embedding.weight.data.copy_(text.vocab.vectors)
+                print('model2.embedding.weight.data.copy.shape',model2.embedding.weight.data.shape)
+                UNK_IDX = text.vocab.stoi[text.unk_token]
+                PAD_IDX = text.vocab.stoi[text.pad_token]
+                print('model2.embedding.weight.data[UNK_IDX].shape',model2.embedding.weight.data[UNK_IDX].shape)
+                print('torch.zeros(embedding_dim).shape',torch.zeros(embedding_dim).shape) 
+                print('model2.embedding.weight.data[PAD_IDX].shape',model2.embedding.weight.data[PAD_IDX].shape)
+                model2.embedding.weight.data[PAD_IDX]=torch.zeros(embedding_dim)
+                model2.embedding.weight.data[UNK_IDX]=torch.zeros(embedding_dim)
+                '''
+
+                train_loss_list_LSTM,train_acc_list_LSTM,valid_loss_list_LSTM,valid_acc_list_LSTM,test_loss_LSTM,test_acc_LSTM,epoch_best_LSTM = running(num_epochs,model2,train_loader,valid_loader,test_loader,text,lr,'LSTM')
+                result2=verifying_model(model2,sentence)
+                print('attitude from LSTM is',result2)
+                test_list_lr_LSTM.append(test_acc_LSTM)
+                print('train_loss_list_LSTM:'+str(train_loss_list_LSTM)+'\n'+'train_acc_list_LSTM:'+str(train_acc_list_LSTM)+'\n'+'valid_loss_list_LSTM:'+str(valid_loss_list_LSTM)+'\n'+'valid_acc_list_LSTM:'+str(valid_acc_list_LSTM)+'\n'+'test_loss_LSTM:'+str(test_loss_LSTM)+'\n'+'test_acc_LSTM:'+str(test_acc_LSTM))
+                time_LSTM = round((time.time()-start_LSTM)/60,2) 
+                print('time_LSTM:'+str(time_LSTM))
+                print('finish Vanilla RNN')
+
+                data_list.append(['LSTM',ratio,hidden_dim,lr,time_LSTM,result2, train_loss_list_LSTM,train_acc_list_LSTM,valid_loss_list_LSTM,valid_acc_list_LSTM,test_loss_LSTM,test_acc_LSTM,epoch_best_LSTM,num_epochs,str(count_parameters(model2))])
+
+                #if run_RNN & run_LSTM:
+                epoch_best = [epoch_best_RNN,epoch_best_LSTM]
+                test_acc = [test_acc_RNN*100,test_acc_LSTM*100]
+                valid_acc_list_rnn=[i*100 for i in valid_acc_list_RNN]
+                valid_acc_list_lstm=[i*100 for i in valid_acc_list_LSTM]
+                methods=['Vanilla RNN','LSTM']
+                run_time_ = [time_RNN,time_LSTM]
+                print('finish LSTM')
+
+                #loss and accuracy under RNN
+                plt.figure()
+                plt.title('validation loss and accuracy under RNN with'+ 'ratio:'+str(ratio)+' hidden_dim:'+str(hidden_dim)+' learning_rate:'+str(lr),fontsize = 5)
+                plt.plot(range(1,len(valid_loss_list_RNN)+1),valid_loss_list_RNN,color='blue',label='loss')
+                plt.plot(range(1,len(valid_loss_list_RNN)+1),valid_acc_list_RNN,color='red',label='accuracy')
+                plt.xlabel('epoch')
+                plt.ylabel('loss/accuracy')
+                plt.legend()  
+                
+
+                #loss and accuracy under LSTM
+                plt.figure()
+                plt.title('validation loss and accuracy under LSTM  with'+ 'ratio:'+str(ratio)+' hidden_dim:'+str(hidden_dim)+' learning_rate:'+str(lr),fontsize = 5)
+                plt.plot(range(1,num_epochs+1),valid_loss_list_LSTM,color='blue',label='loss')
+                plt.plot(range(1,num_epochs+1),valid_acc_list_LSTM,color='red',label='accuracy')
+                plt.xlabel('epoch')
+                plt.ylabel('loss/accuracy')
+                plt.legend() 
+                
+
+                plt.figure()
+                plt.title('accuracy under Vallia RNN and LSTM  with'+ 'ratio:'+str(ratio)+' hidden_dim:'+str(hidden_dim)+' learning_rate:'+str(lr),fontsize = 5)
+                plt.plot(range(1,num_epochs+1),valid_acc_list_rnn,color='blue',label='valid_acc_Vanilla RNN')
+                plt.plot(range(1,num_epochs+1),valid_acc_list_lstm,color='red',label='valid_acc_LSTM')
+                plt.plot(epoch_best,test_acc,'go',label='test_acc')
+                for epoch,acc in zip(epoch_best,test_acc):
+                    plt.text(epoch,acc,acc,ha='center',va='bottom',fontsize=12)
+                plt.xlabel('epoch')
+                plt.ylabel('accuracy')
+                plt.legend() 
+
+                plt.figure()
+                plt.title('cost time under two methods  with'+ 'ratio:'+str(ratio)+' hidden_dim:'+str(hidden_dim)+' learning_rate:'+str(lr),fontsize = 5)
+                plt.plot(methods,run_time_,'ro',label='time costing')
+                for method,time_ in zip(methods,run_time_):
+                    plt.text(method,time_,time_,ha='center',va='bottom',fontsize=12)
+                plt.xlabel('method')
+                plt.ylabel('time/minutes')
+                plt.legend()
+                
+                plt.figure()
+                plt.title('test_acc with'+ 'ratio:'+str(ratio)+' hidden_dim:'+str(hidden_dim)+' learning_rate:'+str(lr),fontsize = 5)
+                plt.plot(methods,test_acc,'go',label='test_acc')
+                for method,acc in zip(methods,test_acc):
+                    plt.text(method,acc,acc,ha='center',va='bottom',fontsize=12)
+                plt.xlabel('method')
+                plt.ylabel('acc')
+                plt.legend()
+
+                # a is appending，‘w' is re-writting
+                with open('record6.txt', 'a') as to_file:
+                    to_file.write('\n')
+                    to_file.write('new record for test '+(test))
+                    to_file.write('\n')
+                    to_file.write('attitude from RNN is'+str(result1))
+                    to_file.write('\n')
+                    to_file.write('attitude from LSTM is'+str(result2))
+                    to_file.write('\n')
+                    total_time=round((time.time()-start0)/60,2)
+                    to_file.write('total_time:'+str(total_time))
+                    to_file.write('\n')
+                    to_file.write('total_epochs:'+str(num_epochs))
+                    to_file.write('\n')
+                    to_file.write('split_ratio of traning set is:'+str(ratio))
+                    to_file.write('\n')
+                    to_file.write('hidden_dim:'+str(hidden_dim))
+                    to_file.write('\n')
+                    to_file.write('learning rate:'+str(lr))
+                    to_file.write('\n')
+                    if run_RNN:
+                        #record for Vanilla RNN
+                        to_file.write('model:Vanilla RNN') 
+                        to_file.write('\n')
+                        to_file.write('time_RNN:'+str(time_RNN))
+                        to_file.write('\n')
+                        to_file.write('the model\'s trainable parameters:'+str(count_parameters(model)))
+                        to_file.write('\n')
+                        to_file.write('train_loss_list_RNN:'+str(train_loss_list_RNN))
+                        to_file.write('\n')
+                        to_file.write('train_acc_list_RNN:'+str(train_acc_list_RNN))
+                        to_file.write('\n')
+                        to_file.write('valid_loss_list_RNN:'+str(valid_loss_list_RNN))
+                        to_file.write('\n')
+                        to_file.write('valid_acc_list_RNN:'+str(valid_acc_list_RNN))
+                        to_file.write('\n')
+                        to_file.write('test_loss_RNN:'+str(test_loss_RNN))
+                        to_file.write('\n')
+                        to_file.write('test_acc_RNN:'+str(test_acc_RNN))  
+                        to_file.write('\n')
+                    if run_LSTM:
+                        #record for LSTM
+                        to_file.write('model:LSTM') 
+                        to_file.write('\n')
+                        to_file.write('time_LSTM:'+str(time_LSTM))
+                        to_file.write('\n')
+                        to_file.write('the model\'s trainable parameters:'+str(count_parameters(model2)))
+                        to_file.write('\n')
+                        to_file.write('train_loss_list_LSTM:'+str(train_loss_list_LSTM))
+                        to_file.write('\n')
+                        to_file.write('train_acc_list_LSTM:'+str(train_acc_list_LSTM))
+                        to_file.write('\n')
+                        to_file.write('valid_loss_list_LSTM:'+str(valid_loss_list_LSTM))
+                        to_file.write('\n')
+                        to_file.write('valid_acc_list_LSTM:'+str(valid_acc_list_LSTM))
+                        to_file.write('\n')
+                        to_file.write('test_loss_LSTM:'+str(test_loss_LSTM))
+                        to_file.write('\n')
+                        to_file.write('test_acc_LSTM:'+str(test_acc_LSTM))  
+                        to_file.write('\n')
+                    to_file.close()
+                
+
+            except Exception as err:
+                with open('record6.txt', 'a') as to_file:
+                    to_file.write('MATCHESS--'+'ratio:'+str(ratio)+' hidden_dim:'+str(hidden_dim)+' learning_rate:'+str(lr))
+                    to_file.write('WRONG MESSAGE RAISED IN THIS MATCHESS: '+str(err))
+                    print('WRONG MESSAGE RAISED IN THIS MATCHESS: '+str(err))
+                    to_file.write('\n')
+                    to_file.close()
+
+data_df= pd.DataFrame(data_list)   
+data_df.columns=['type','ratio','hidden_dim','learning_rate','time','sentence_prediction', 'train_loss','train_acc','valid_loss','valid_acc','test_loss','test_acc','epoch_best','total_epoch','trainable parameters']
+with ExcelWriter('output_table.xlsx',engine="openpyxl",mode = 'a') as writer:
+    data_df.to_excel(writer)
+    writer.save()
+
+multipage('record for test '+(test))
+print('total time for all:'+str(round((time.time()-start0)/60,2)))
+
+with open('record6.txt', 'a') as to_file:
+    to_file.write('total time for all:'+str(round((time.time()-start0)/60,2)))
+    to_file.write('\n')
+    to_file.write('---FINISHED ABOVE---')
+    to_file.close()
+
+print('finished'+test)
+
