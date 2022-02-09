@@ -1,7 +1,7 @@
 # NLP-Sentiment-Analysis
 
 Background: 
-Use Vanilla RNN and LSTM to predict the IMDB dataset’s sentiment (negative (0) or positive (1)), and take 0.5 as threshold for final sigmoid function (if it is larger than 0.5, that sentence’s sentiment is positive). Meanwhile, I fixed embedding dimension as 100, run each experiment for 5 epochs, and tuned some hyper parameters as below:
+Use Vanilla RNN and LSTM to predict the IMDB dataset’s sentiment (negative (0) or positive (1)), and take 0.5 as the threshold for the final sigmoid function (if it is larger than 0.5, that sentence’s sentiment is positive). Meanwhile, I fixed the embedding dimension as 100, run each experiment for 5 epochs, and tuned some hyperparameters as below:
 (1)	Divided original training set (250000) as training set and validation set with ratio: 0.7,0.8,0.9
 (2)	Hidden dimension:20,50,100,200,500
 (3)	Learning rate:0.001,0.003,0.005,0.008,0.01,0.02,0.03
@@ -9,7 +9,7 @@ As a result, 105 experiments for each Vanilla RNN and LSTM were run, spending 28
 
 Analysis:
 1 About time costing:
-(1) Gernerally speaking, LSTM’s time for each experiment is longer than Vanilla RNN, the maxiumn time for LSTM is about 5.5 mintues while the maxium time for Vanilla RNN is about 2 minutes. But their differences are not such big all the time, In some case, the time difference between them is very small.
+(1) Generally speaking, LSTM’s time for each experiment is longer than Vanilla RNN, the maximum time for LSTM is about 5.5 minutes while the maximum time for Vanilla RNN is about 2 minutes. But their differences are not such big all the time, In some cases, the time difference between them is very small.
  
 (2) Learning rate did not affect experiment’s time much. For different training data size (07,0.8,0.9), their experiment’s time do not vary much along with different learning rate. However, there is something interesting, for both Vanilla RNN and LSTM, the experiment’s time decrease while the training data size is increased.
     
